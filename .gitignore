@@ -1,0 +1,38 @@
+# OS / 编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Node
+node_modules/
+
+# 数据产物(不进 skill 仓库;样本与渲染图归 builder out-dir / 训练侧)
+out/
+out_pilot/
+*.jsonl
+!schemas/**/*.jsonl
+samples_*.jsonl
+*.meta.jsonl
+cost_log.txt
+*_aug.json
+
+# 大文件 / 媒体素材(若需版本化请用 LFS 或单独仓库)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+*.tar.gz

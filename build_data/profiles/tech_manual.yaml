@@ -1,0 +1,128 @@
+# 领域 profile:技术手册 / 工业文档
+# 本文件只描述"领域特有"的内容:资产命名、污染词表、假负例规则、相似轴。
+# 通用流程与方法论见 SKILL.md 与 references/methodology.md。
+
+domain: 技术手册 / 工业文档
+
+# ---- 图像资产命名约定(audit 用于解析 page_id)----
+asset_convention:
+  # 示例:pages/ABC123/ABC123_p0042_b.png -> doc_id=ABC123, page=42
+  page_id_regex: '^(?P<doc_id>.+)_p(?P<page>\d+)_b\.png$'
+
+# ---- shortcut 污染词表([auto] 检测)----
+# 与语义无关但视觉/文本上反复一致出现的特征,禁止进入正例文本。
+pollution_patterns:
+  - '页眉'
+  - '页脚'
+  - '页码'
+  - 'logo'
+  - '标志'
+  - '版本'
+  - '(?i)footer'
+  - '(?i)header'
+
+# ---- 假负例规则([auto] 检测)----
+# 实质等价 / 同一流程的样本对,永不互为难负。
+fake_negative_rules:
+  - rule: same_page            # 负例与正例是同一页
+  - rule: adjacent_pages       # 同文档相邻页(同一流程的相邻步骤)
+    args: {distance: 2}
+  - rule: same_key             # 同一章节视为实质等价
+    args: {key_field: chapter}
+
+# ---- VQA 附加规则([auto] 检测,可选)----
+vqa:
+  # 中文场景下答案长度经验上限
+  max_answer_len: 500
+
+# ---- 前置裁决快照(可选,由 training_fit gate 填写)----
+# 判定流程见 references/training_fit.md;这是裁决结果的落盘快照,非蓝图。
+# decision: finetune | no_finetune_prompt | no_finetune_data_fix | rag_first | eval_only
+training_fit:
+  decision: finetune
+  reason: 基座 zero-shot 在领域术语上系统性答错,需注入领域能力
+  method: qlora              # qlora | lora | partial_ft | full_ft
+  hardware: null             # 如 "2×4090 24G";null = 未知,按保守默认走 pilot
+  scale_target: 2000         # 由 method 联动规则得出
+  platform: ms_swift         # ms_swift | llama_factory | ...
+  schema: schemas/ms_swift/vqa_sft.md
+
+# ---- R:数据集质量总账(权重之和 = 1)----
+# true_r 是唯一真实 R(训练后才可观测);其余为代理 R(audit/judge 可测)。
+metrics:
+  - {key: true_r,      label: 下游 Recall@10 / 答案准确率, weight: 0.5,
+      note: 唯一真实 R,天级/千元级,仅在里程碑观测;其余指标只配为它的代理}
+  - {key: fn_ratio,    label: 假负率, weight: 0.2, threshold: {max: 0.05}, check: audit_embedding}
+  - {key: fidelity,    label: query/question 仿真度, weight: 0.2, check: manual}
+  - {key: axis_balance, label: 轴配比均衡, weight: 0.1, threshold: {max_min_ratio: 50}, check: audit_embedding}
+
+# ---- 三级观测金字塔 ----
+# 数据闭环被迫运行在代理 R 上;中间层(judge)用于在 cheap proxy 与 expensive true R 之间校准。
+observation_tiers:
+  - {tier: proxy, tool: audit_embedding.py / audit_vqa.py, cost: 免费·秒级,  cadence: 每次}
+  - {tier: judge, tool: VLM-as-judge 抽检相关性/仿真度,     cost: 元级·分钟, cadence: 每批次}
+  - {tier: true_r, tool: 训练后下游 eval,                    cost: 千元·天级, cadence: 里程碑}
+
+# ---- 语料能力包络 gate(meta-R,放量前必须逐条裁决)----
+# "数据救不了语料不足";每条 gate 回答:这份语料是否有承载该轴/该样本类的结构。
+capability_gates:
+  - id: hard_neg_supply
+    question: 每条相似轴是否都有足量的真实难负承载结构(如"同总成相邻零件")?
+    on_fail: 降低该轴权重或放弃该轴,靠推理期 metadata filter 补偿
+  - id: verifiability
+    question: VQA 答案是否有权威/离线通道可验证(ground truth 可得)?
+    on_fail: 该来源只产出无图样本或降级为 caption 任务
+  - id: coverage
+    question: 语料覆盖的机型/场景是否覆盖目标用户 query 分布?
+    on_fail: 缩小 R 承诺范围,或在 R 总账中明确标注覆盖缺口
+
+# ---- pipeline 阶段的活/冻结标注 ----
+# alive = 需运行时智能(LLM);frozen = 确定性脚本,不值得拆出智能。
+pipeline_stages:
+  - {stage: render,          mode: frozen}
+  - {stage: dedup,           mode: frozen}
+  - {stage: schema_assembly, mode: frozen}
+  - {stage: caption,         mode: alive}
+  - {stage: query_gen,       mode: alive}
+  - {stage: semantic_audit,  mode: alive, note: "即 [manual] 抽检;auto 检查是 frozen"}
+
+# ---- 相似轴枚举(embedding 线)----
+# 开放式注册表:不是封闭枚举。从 R→D 反馈(训练评测暴露的新失败模式)
+# 中发现新轴 → 在此注册新轴;弱轴要么平衡采样、要么标注弃用。
+similarity_axes:
+  - {id: 1, name: 整页图文, status: active}
+  - {id: 2, name: 零件号↔爆炸图, status: active,
+     note: '"同总成相邻零件"极难负落地存在缺口 → hard_neg_supply gate 未过,轴有退化为字符串匹配的风险'}
+  - {id: 3, name: 故障↔排故图, status: active}
+  - {id: 4, name: 章节↔代表页, status: active}
+  - {id: 5, name: 机型↔手册页, status: active, note: 需 banner 区分机型,否则模型抓 logo/版式充当该轴}
+
+# ---- VQA 来源枚举(vqa 线,可选)----
+vqa_sources:
+  - caption_qa        # 由 caption 派生的页面级问答
+  - chapter_nav       # 章节导航 / 结构问答
+  - fault_diagnosis   # 故障 ↔ 处理方式问答
+
+# ---- 领域案例数据(不放正文,仅供参照)----
+baseline_notes: |
+  基线实测(早期产出):caption 污染 91%、正例超长(>800字)38%、
+  假负率 25%(远超 5% 红线)、轴配比失衡 491:1。
+
+# ---- 实战教训池(通用原理已提炼进 methodology;此处保留项目实录作证据/类比)----
+lessons:
+  - id: targeted_negatives
+    lesson: 定向硬负例胜过堆数;负样本数曲线 5→2→1→4,4 是平衡点,而治假阳的是针对具体失败 case 的枢纽负例(数量 +1)
+  - id: low_info_pages_hubness
+    lesson: 低信息页（空白图/封面/目录/章节首页）是假阳通用病源（hubness）；必须显式作负例且跨多 query 复用，不能留空不处理
+  - id: caption_dilution
+    lesson: caption-rich 训练形态下 pooling 后 embedding ≈80% 由 caption 决定,图通路未被锻炼,推理遇纯图退化;训练形态必须与推理形态对齐
+  - id: query_style_ood
+    lesson: 训练 query 全长句(如"三一SY285C挖掘机空调制冷不足压力偏低怎么查漏")而真实用户短句("SY285H 空调不制冷")→ OOD;必须混入真实风格短句
+  - id: diversity_over_volume
+    lesson: 新增 repaircase(跨设备域 SPS1212 + 案例插图)比同源手册再加量更提泛化
+  - id: dryrun_before_vlm
+    lesson: type-2 重设计先 --no-vlm 试跑(171→752 确认增益)再花 ¥2.44 全量 VLM;结构改动零成本验证优先
+  - id: filename_is_schema
+    lesson: structure.py 从文件名解析机型/手册类型/doc-id,改名即破坏解析;命名约定 = 隐式 schema(机型前缀+手册类型关键词),重构不得随意改名
+  - id: badcase_compass
+    lesson: '“空白图高响应”“SY285 空调→首页”等每个失败 case 都直接指向一个数据缺陷；先倒推补数据，再考虑调超参'
