@@ -9,5 +9,8 @@
 | ms-swift | embedding / InfoNCE | [ms_swift/embedding_infonce.md](ms_swift/embedding_infonce.md) | 主要交付格式;唯一原生支持对比学习 |
 | ms-swift | VQA SFT(多模态) | [ms_swift/vqa_sft.md](ms_swift/vqa_sft.md) | messages 格式(user/assistant) |
 | LLaMA-Factory | VQA SFT(多模态) | [llama_factory/vqa_sft.md](llama_factory/vqa_sft.md) | sharegpt 格式(human/gpt);**不支持 embedding** |
+| ms-swift | embedding **eval**(可选) | [ms_swift/eval_embedding.md](ms_swift/eval_embedding.md) | BEIR 三元组;swift 不内建 recall eval,run 归外部 |
+| ms-swift | VQA **eval**(可选) | [ms_swift/eval_vqa.md](ms_swift/eval_vqa.md) | 复用 vqa canonical + `split=eval`;ground truth 答案 |
+| LLaMA-Factory | VQA **eval**(可选) | [llama_factory/eval_vqa.md](llama_factory/eval_vqa.md) | sharegpt + `split=eval`;不支持 embedding eval |
 
 新增平台 = 新增一个子目录 + md 文件(沿用上述骨架),并更新本表。

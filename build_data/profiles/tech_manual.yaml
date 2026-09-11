@@ -30,10 +30,39 @@ fake_negative_rules:
   - rule: same_key             # 同一章节视为实质等价
     args: {key_field: chapter}
 
+# ---- 多样性配额(把"全长句 OOD"教训变成机器可拦的门槛)----
+# 三类配额是**比例下限**,audit_diversity.py 低于任一下限 → WARN;
+# 指标可进 regression_baselines(key 前缀 diversity.)由 diff_turn 守卫。
+# query_len_buckets 按字符数三档,对应 methodology 检查清单"长短/口语/术语混用";
+# colloquial_markers 用于口语风格命中。
+diversity:
+  query_len_buckets:            # 短句 OOD 防线(源自 lessons#query_style_ood)
+    short: {max: 15, min_ratio: 0.30}
+    medium: {min: 15, max: 40, min_ratio: 0.40}
+    long: {min: 40, min_ratio: 0.10}
+  colloquial_min_ratio: 0.10    # 口语风格最低占比
+  colloquial_markers: [怎么, 啥, 咋, 多少, 哪里, 哪个, 什么, 为何]
+  distinct_n: 2                 # distinct-n 的 n(判"句式指纹")
+  distinct_min: 0.35            # distinct-2 低于此 → 句式指纹告警
+  min_per_axis: 20              # 每个相似轴最低样本数(similarity_axes 配套)
+  min_per_source: 30            # 每个 VQA 来源最低样本数(vqa_sources 配套)
+
+# ---- 样本类型配额(VQA 线;正/负由产线本身定义,这里管特殊类型的 mix)----
+# sample_type 来自 .meta.jsonl(normal 缺省);refusal=拒答,adversarial=对抗。
+# rationale:不可答问题的正确行为是拒答 —— 不混入拒答样本,模型学会"图里没有也要编";
+# 对抗样本(影子/异常图/诱导性问题)测模型的鲁棒性,不给就靠上线事故发现。
+mix:
+  refusal: {min_ratio: 0.05, max_ratio: 0.30}    # 太少→幻觉,太多→模型变得保守该答不答
+  adversarial: {min_ratio: 0.03, max_ratio: 0.15}
+  refusal_trigger: "profile vqa.refusal_markers 匹配的拒答文本,或空答案"
+
 # ---- VQA 附加规则([auto] 检测,可选)----
 vqa:
   # 中文场景下答案长度经验上限
   max_answer_len: 500
+  # 拒答风格标记:sample_type ∈ {refusal, adversarial} 的样本答案必须命中其一(或为空),
+  # 否则 audit_vqa 硬失败 —— 对不可答问题强行作答 = 教模型幻觉
+  refusal_markers: [图内未见, 图中没有, 无法确定, 无法回答, 无相关信息, 图中未提及]
 
 # ---- 前置裁决快照(可选,由 training_fit gate 填写)----
 # 判定流程见 references/training_fit.md;这是裁决结果的落盘快照,非蓝图。
@@ -126,3 +155,53 @@ lessons:
     lesson: structure.py 从文件名解析机型/手册类型/doc-id,改名即破坏解析;命名约定 = 隐式 schema(机型前缀+手册类型关键词),重构不得随意改名
   - id: badcase_compass
     lesson: '“空白图高响应”“SY285 空调→首页”等每个失败 case 都直接指向一个数据缺陷；先倒推补数据，再考虑调超参'
+
+# ---- 可选:eval 与飞轮(eval.enabled=false 时整段不生效)----
+eval:
+  enabled: false               # 无 GPU / 不跑训练时保持 false,skill 行为不变
+  mode: offline                # offline | online | both
+  metrics: [recall@10, recall@1]
+  eval_set: out/eval
+  cadence: per_turn
+  sample_floor: 2000
+  per_axis_floor: 50
+
+# ---- badcase 选择方法论权重(references/badcase_selection.md §1)----
+selection:
+  w_freq: 0.3
+  w_sev: 0.3
+  w_fix: 0.2
+  w_novel: 0.2
+  new_bonus: 1.2               # 新轴优先(回归不再提权,以 diff_turn 指标级仲裁为准,见 badcase_selection §1)
+  badcase_threshold: 50        # 坏例达此数触发下一回合(flywheel.md §2)
+  roi_floor: 0.0              # 边际 true_r/元 低于此则停(flywheel.md §5)
+  online_freq_discount: 0.5   # 生产 badcase 的 freq 打折(噪声大,按 channel:"online" 字段判定)
+
+# ---- VQA 失败模式注册表(P2-3,同 similarity_axes 的开放式结构)----
+# parse_eval 对 vqa 未知 source/生产候选路由 classify_register;人确认后在此登记,
+# 下回合起 novelty=known,路由转为 rewrite_fix(具体修复)
+vqa_failure_modes: []          # 例: - {name: 图内不可见查询, status: active, action_pattern: rewrite}
+
+# ---- 飞轮停止判据(P1-4,flywheel.md §2/§5;record_turn/diff_turn 消费)----
+flywheel:
+  plateau_turns: 2            # 连续 N 轮 true_r_delta<=0 → 自动停
+  roi_floor: null             # 边际 true_r/元 阈值;null=不启用(用 selection.roi_floor 回退)
+
+# ---- 语料缺口轴(数据救不了语料不足 → fixability=0,路由降权弃轴)----
+# 由 capability_gates 裁决填入;轴 2 已知 hard_neg_supply 未过(见上 similarity_axes 注释)
+axis_corpus_gaps: [2]
+
+# ---- badcase 注册表(结构化,取代 freeform lessons 的可自动化部分)----
+# parse_eval / diff_turn / register_axis 读写;lessons 仍保留作人读实录
+# last_fail_count 省略 = 无基线,首回合不判回归(baseline);register_axis --apply 会建议回填
+badcase_registry:
+  - {axis: 零件号↔爆炸图, status: degraded, note: hard_neg_supply gate 未过,走降权弃轴}
+  - {axis: 机型↔手册页, status: active, note: 需 banner 区分机型}
+
+# ---- 回归守卫基线(flywheel.md §3,每回合 re-eval 后比对)----
+# lower_is_better: fn_ratio 等越低越好;其余 higher_is_better
+regression_baselines:
+  # best: null = 未建立基线,首回合 eval 后由 diff_turn --update 回填;非 null = 历史最佳(如 fn_ratio 的 5% 红线作策略基线)
+  - {key: recall@10, best: null, lower_is_better: false}
+  - {key: answer_acc, best: null, lower_is_better: false}
+  - {key: fn_ratio, best: 0.05, lower_is_better: true}

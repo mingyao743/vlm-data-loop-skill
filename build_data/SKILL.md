@@ -42,6 +42,7 @@ audit/judge 是有噪声的观测(O),数据修复操作是动作(A),唯一真实
 | 内部规范格式 | [references/schema.md](references/schema.md) | 两条线的 canonical 中间表示与约束 |
 | 平台格式契约 | [schemas/](schemas/README.md) | canonical → 各训练平台映射、对齐校验、已知坑 |
 | 领域 profile | [profiles/](.) | **R 指标、观测节奏、包络 gate、活/冻结标注、相似轴注册表** |
+| 可选 eval / 飞轮 | [eval_fit.md](references/eval_fit.md) · [flywheel.md](references/flywheel.md) · [badcase_selection.md](references/badcase_selection.md) · [badcase_intake.md](references/badcase_intake.md) | 该不该 eval / 离线 vs 在线 / 选择方法论 / 回合治理 / 回归守卫;profile `eval.enabled` 开关 |
 
 **换领域 = 写一个新的 profile YAML;换训练平台 = 在 `schemas/` 加一个 md。**
 skill 正文与脚本不含任何领域词。
@@ -59,6 +60,13 @@ skill 正文与脚本不含任何领域词。
 4. **修复(A)**:按 audit 结果决定动作——重写/补难负/重平衡/**降权或弃用包络 gate 未过的轴**(数据救不了语料不足)。
 5. **放量**:VLM + `--resume`,盯 `cost_log.txt`;放量后重跑 audit + judge。
 6. **验收(true_r,里程碑)**:训练评测。暴露的**新失败模式 → 注册为新相似轴或新质量维度**(开放式注册表,呼应双螺旋),回到第 3 步;R→D 反馈只证伪指标和权重,不改 profile 规则之外的东西。
+
+> **可选:eval 与数据飞轮**。step 6 的 true_r 若要工具化(而非手到里程碑),开 profile
+> `eval.enabled: true`,走 [eval_fit.md](references/eval_fit.md) 裁决 eval 方案、
+> [badcase_selection.md](references/badcase_selection.md) 选择杠杆最高的失败 case、
+> [flywheel.md](references/flywheel.md) 治理回合 / 回归 / 沉淀。平台 eval 输出先用
+> `convert_eval.py` 转 canonical,eval 集格式见 `schemas/<platform>/eval_*.md`,
+> 回合记录用 `record_turn.py`,结果解析用 `parse_eval.py`。未开启时 skill 行为不变(只到 audit 层)。
 
 ## Commands
 
@@ -78,11 +86,23 @@ VLM_API_KEY=sk-... python -m builder.pipeline --src-dir SRC --out-dir out \
   --vlm-model qwen-vl-max --vlm-base-url https://dashscope.aliyuncs.com/compatible-mode/v1 \
   --k-neg 5 --queries-per-page 2 --resume
 
-# 审计产出(SKILL_DIR = 本 skill 所在目录)
-python3 "$SKILL_DIR/scripts/audit_embedding.py" out_pilot
-python3 "$SKILL_DIR/scripts/audit_vqa.py" out_pilot
+# 审计产出(SKILL_DIR = 本 skill 所在目录);--report 产机器可读摘要(供 record_turn 收进 turn_log)
+python3 "$SKILL_DIR/scripts/audit_embedding.py" out_pilot --report out/audit_emb.json
+python3 "$SKILL_DIR/scripts/audit_vqa.py" out_pilot --report out/audit_vqa.json
+# 多样性审计(零成本,配额在 profile diversity:;风格收窄/句式指纹/长度三档)
+python3 "$SKILL_DIR/scripts/audit_diversity.py" out_pilot --report out/audit_div.json
 # 换领域:--profile "$SKILL_DIR/profiles/<domain>.yaml"
 # 换平台格式:按 schemas/<platform>/*.md 的契约交付,audit 校验该契约
+# judge 层抽检(可选;对比 audit 判定,输出 proxy 漂移率;--no-vlm 仅出 proxy 分布)
+python3 "$SKILL_DIR/scripts/judge_sample.py" out_pilot --n 30 \
+  --endpoint https://... --api-key sk-... --model qwen-vl-max
+# 可选:eval 与飞轮(profile eval.enabled=true 时)
+python3 "$SKILL_DIR/scripts/convert_eval.py" out/raw_platform_eval.jsonl --format swift_ir --out out/eval_result.jsonl
+python3 "$SKILL_DIR/scripts/parse_eval.py" out/eval_result.jsonl --profile "$SKILL_DIR/profiles/<domain>.yaml"
+python3 "$SKILL_DIR/scripts/record_turn.py" out/turn_log.jsonl --eval-metrics out/metrics.json \
+  --audit-report out/audit_emb.json --eval-result out/eval_result.jsonl --badcases out/badcases.jsonl --cost 2.44
+python3 "$SKILL_DIR/scripts/diff_turn.py" out/turn_log.jsonl --profile "$SKILL_DIR/profiles/<domain>.yaml"
+python3 "$SKILL_DIR/scripts/register_axis.py" out/badcases.jsonl --profile "$SKILL_DIR/profiles/<domain>.yaml"
 ```
 
 关键参数:
@@ -110,6 +130,9 @@ VQA 线另有 `--max-answer-len` / `--no-leak-check`。
 - **数据救不了语料不足**(meta-R):相似轴在没有承载结构的语料上必然退化,包络 gate 未过的轴降权或弃用,不硬堆样本。
 - **Embedding**:凡业务上实质等价的样本对(profile `fake_negative_rules`)**永不互为难负**——一条假负例污染整个 batch(audit 自动检测)。
 - **VQA**:答案必须可验证、不泄漏进问题;声称来自图内的内容必须真实可见(audit 检测子串泄漏)。
+- **VQA 拒答(不可答问题的正确行为是拒答)**:图中不可见/无法判断的问题,答案应为拒答风格或空
+  (meta `sample_type: refusal/adversarial`),强行作答 = 教模型幻觉(audit_vqa 硬失败);
+  拒答/对抗样本按 profile `mix:` 配额混入 —— 零拒答样本 → 模型必然学会"图里没有也要编"。
 - **Shortcut 是默认行为**:与语义无关却一致出现的特征(profile `pollution_patterns`)禁止进入正例/问题文本(audit 自动检测)。
 - **活/冻结边界**:确定性阶段(渲染/去重/组装/静态检查)用脚本冻结,智能阶段(caption/query/语义审计)才用 LLM;不要在冻结层引入智能,也不要在活层硬写规则。
 - Query/question 必须覆盖真实用户问法;固定模板只作种子,多样性靠改写;

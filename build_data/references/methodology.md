@@ -104,6 +104,9 @@ ground truth 是否有权威通道、覆盖面是否够 query 分布。**gate �
 - [ ] `[manual]` **精确标识专项 eval**:业务上要求精确匹配的标识(编号、量值、代号)必须有专门评测 query,否则无法发现"模糊近似退化"。
 - [ ] `[manual]` **Query 仿真度**:生成 query 应模仿目标系统真实用户,按轴均衡覆盖;
   **风格分布必须覆盖真实输入的长短/口语/术语混用**(全长句训练 → 短句 OOD,枢纽页有机可乘)。
+  **量化验收**:[`audit_diversity.py`](../scripts/audit_diversity.py) 按 profile `diversity:`
+  配额机检(长度三档/口语占比/distinct-n/每轴每源下限)——配额是本项的 `[auto]` 下限,
+  人工复核在其之上补充语义层(术语用得对不对、指代清不清)。
 
 ### 3.2 VQA 线
 

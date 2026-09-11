@@ -12,8 +12,10 @@ Checks (methodology.md §3 items marked [auto]):
   4. axis balance: sample counts per type
 
 Usage: audit_embedding.py OUT_DIR_OR_JSONL [--profile profiles/tech_manual.yaml]
-         [--fn-threshold 0.05] [--max-text-len 800]
+         [--fn-threshold 0.05] [--max-text-len 800] [--report out_audit.json]
 Exit: 0 ok/warn, 1 hard fail (schema misalignment or FN ratio above threshold).
+With --report, also writes a machine-readable summary (proxy metrics feed
+record_turn.py → turn_log "proxy" block → diff_turn guards them, P1-1).
 """
 from __future__ import annotations
 
@@ -89,6 +91,7 @@ def main() -> int:
     ap.add_argument("--profile", default=os.path.join(os.path.dirname(__file__), "..", "profiles", "tech_manual.yaml"))
     ap.add_argument("--fn-threshold", type=float, default=0.05, help="hard-fail FN ratio (default 5%%)")
     ap.add_argument("--max-text-len", type=int, default=800, help="positive text length ceiling (default 800)")
+    ap.add_argument("--report", default=None, help="write machine-readable summary json here")
     a = ap.parse_args()
 
     profile = load_profile(a.profile)
@@ -231,6 +234,24 @@ def main() -> int:
         print(f"[{'WARN' if ratio > 50 else 'OK'}] axis balance: {parts} (max:min = {ratio:.0f}:1)")
     else:
         print("[WARN] axis balance: no .meta.jsonl, cannot count per-type")
+
+    if a.report:
+        rep = {
+            "kind": "embedding",
+            "samples": n,
+            "neg_slots": neg_total,
+            "metrics": {
+                "fn_ratio": round(fn_ratio, 4),
+                "pollution_ratio": round(pol_pct, 4),
+                "long_text_ratio": round(long_text / n, 4) if n else 0.0,
+                "bad_asset_count": bad_asset,
+                "axis_max_min_ratio": round(max(types.values()) / max(1, min(types.values())), 2) if types else None,
+            },
+            "hard_fail": hard_fail,
+        }
+        with open(a.report, "w", encoding="utf-8") as f:
+            json.dump(rep, f, ensure_ascii=False, indent=2)
+        print(f"[INFO] report → {a.report}")
 
     return 1 if hard_fail else 0
 
